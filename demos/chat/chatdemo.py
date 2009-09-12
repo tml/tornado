@@ -17,14 +17,15 @@
 import logging
 import tornado.auth
 import tornado.escape
-import tornado.httpserver
-import tornado.ioloop
 import tornado.options
 import tornado.web
+import tornado.twister
 import os.path
 import uuid
 
 from tornado.options import define, options
+
+from twisted.internet import reactor
 
 define("port", default=8888, help="run on the given port", type=int)
 
@@ -147,9 +148,11 @@ class AuthLogoutHandler(BaseHandler, tornado.auth.FacebookMixin):
 
 def main():
     tornado.options.parse_command_line()
-    http_server = tornado.httpserver.HTTPServer(Application())
-    http_server.listen(options.port)
-    tornado.ioloop.IOLoop.instance().start()
+
+    site = tornado.twister.TornadoSite(Application())
+    reactor.listenTCP(options.port, site)
+
+    reactor.run()
 
 
 if __name__ == "__main__":

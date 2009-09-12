@@ -167,7 +167,7 @@ class RequestHandler(object):
 
         The returned value is always unicode.
         """
-        values = self.request.arguments.get(name, None)
+        values = self.request.args.get(name, None)
         if values is None:
             if default is self._ARG_DEFAULT:
                 raise HTTPError(404, "Missing argument %s" % name)
@@ -274,12 +274,7 @@ class RequestHandler(object):
 
     def redirect(self, url, permanent=False):
         """Sends a redirect to the given (optionally relative) URL."""
-        if self._headers_written:
-            raise Exception("Cannot redirect after headers have been written")
-        self.set_status(301 if permanent else 302)
-        # Remove whitespace
-        url = re.sub(r"[\x00-\x20]+", "", _utf8(url))
-        self.set_header("Location", urlparse.urljoin(self.request.uri, url))
+        self.request.redirect(url)
         self.finish()
 
     def write(self, chunk):
@@ -1027,7 +1022,7 @@ class StaticFileHandler(RequestHandler):
 
         self.set_header("Last-Modified", modified)
         self.set_header("Content-Length", stat_result[stat.ST_SIZE])
-        if "v" in self.request.arguments:
+        if "v" in self.request.args:
             self.set_header("Expires", datetime.datetime.utcnow() + \
                                        datetime.timedelta(days=365*10))
             self.set_header("Cache-Control", "max-age=" + str(86400*365*10))

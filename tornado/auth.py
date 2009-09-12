@@ -50,7 +50,6 @@ import binascii
 import cgi
 import hashlib
 import hmac
-import httpclient
 import escape
 import logging
 import time
@@ -58,6 +57,19 @@ import urllib
 import urlparse
 import uuid
 
+from twisted.web import client
+
+class CallbackAdaptorMixin(object):
+
+    def adaptCallback(self, deferred, callback, *args, **kwargs):
+        class Response(object):
+            def __init__(self, error=None, body=None):
+                self.error = error
+                self.body = body
+
+        deferred.addCallback(lambda x: Response(body=x))
+        deferred.addErrback(lambda e: Response(error=e))
+        deferred.addCallback(lambda r: callback(r, *args, **kwargs))
 
 class OpenIdMixin(object):
     """Abstract implementation of OpenID and Attribute Exchange.
@@ -88,15 +100,16 @@ class OpenIdMixin(object):
         methods.
         """
         # Verify the OpenID response via direct request to the OP
-        args = dict((k, v[-1]) for k, v in self.request.arguments.iteritems())
+        args = dict((k, v[-1]) for k, v in self.request.args.iteritems())
         args["openid.mode"] = u"check_authentication"
         url = self._OPENID_ENDPOINT + "?" + urllib.urlencode(args)
-        http = httpclient.AsyncHTTPClient()
-        http.fetch(url, self.async_callback(
-            self._on_authentication_verified, callback))
+
+        d = client.getPage(url)
+        self.adaptCallback(client.getPage(url),
+                           self.async_callback(self._on_authentication_verified, callback))
 
     def _openid_args(self, callback_uri, ax_attrs=[], oauth_scope=None):
-        url = urlparse.urljoin(self.request.full_url(), callback_uri)
+        url = urlparse.urljoin(self.request.uri, callback_uri)
         args = {
             "openid.ns": "http://specs.openid.net/auth/2.0",
             "openid.claimed_id": 
@@ -104,7 +117,7 @@ class OpenIdMixin(object):
             "openid.identity": 
                 "http://specs.openid.net/auth/2.0/identifier_select",
             "openid.return_to": url,
-            "openid.realm": "http://" + self.request.host + "/",
+            "openid.realm": "http://" + self.request.getRequestHostname() + "/",
             "openid.mode": "checkid_setup",
         }
         if ax_attrs:
@@ -138,7 +151,7 @@ class OpenIdMixin(object):
             args.update({
                 "openid.ns.oauth":
                     "http://specs.openid.net/extensions/oauth/1.0",
-                "openid.oauth.consumer": self.request.host.split(":")[0],
+                "openid.oauth.consumer": self.request.getRequestHostname(),
                 "openid.oauth.scope": oauth_scope,
             })
         return args
@@ -152,7 +165,7 @@ class OpenIdMixin(object):
 
         # Make sure we got back at least an email from attribute exchange
         ax_ns = None
-        for name, values in self.request.arguments.iteritems():
+        for name, values in self.request.args.iteritems():
             if name.startswith("openid.ns.") and \
                values[-1] == u"http://openid.net/srv/ax/1.0":
                 ax_ns = name[10:]
@@ -161,7 +174,7 @@ class OpenIdMixin(object):
             if not ax_ns: return u""
             prefix = "openid." + ax_ns + ".type."
             ax_name = None
-            for name, values in self.request.arguments.iteritems():
+            for name, values in self.request.args.iteritems():
                 if values[-1] == uri and name.startswith(prefix):
                     part = name[len(prefix):]
                     ax_name = "openid." + ax_ns + ".value." + part
@@ -268,7 +281,7 @@ class OAuthMixin(object):
         args = dict(oauth_token=request_token["key"])
         if callback_uri:
             args["oauth_callback"] = urlparse.urljoin(
-                self.request.full_url(), callback_uri)
+                self.request.uri, callback_uri)
         self.redirect(authorize_url + "?" + urllib.urlencode(args))
 
     def _oauth_access_token_url(self, request_token):
@@ -636,7 +649,7 @@ class GoogleMixin(OpenIdMixin, OAuthMixin):
         """Fetches the authenticated user data upon redirect."""
         # Look to see if we are doing combined OpenID/OAuth
         oauth_ns = ""
-        for name, values in self.request.arguments.iteritems():
+        for name, values in self.request.args.iteritems():
             if name.startswith("openid.ns.") and \
                values[-1] == u"http://specs.openid.net/extensions/oauth/1.0":
                 oauth_ns = name[10:]
@@ -702,12 +715,12 @@ class FacebookMixin(object):
             "v": "1.0",
             "fbconnect": "true",
             "display": "page",
-            "next": urlparse.urljoin(self.request.full_url(), callback_uri),
+            "next": urlparse.urljoin(self.request.uri, callback_uri),
             "return_session": "true",
         }
         if cancel_uri:
             args["cancel_url"] = urlparse.urljoin(
-                self.request.full_url(), cancel_uri)
+                self.request.uri, cancel_uri)
         if extended_permissions:
             if isinstance(extended_permissions, basestring):
                 extended_permissions = [extended_permissions]
