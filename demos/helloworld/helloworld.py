@@ -14,9 +14,10 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-import tornado.httpserver
-import tornado.ioloop
+from twisted.internet import reactor
+
 import tornado.options
+import tornado.twister
 import tornado.web
 import logging
 
@@ -35,9 +36,11 @@ def main():
     application = tornado.web.Application([
         (r"/", MainHandler),
     ])
-    http_server = tornado.httpserver.HTTPServer(application)
-    http_server.listen(options.port)
-    tornado.ioloop.IOLoop.instance().start()
+
+    site = tornado.twister.TornadoSite(application)
+    reactor.listenTCP(options.port, site)
+
+    reactor.run()
 
 
 if __name__ == "__main__":

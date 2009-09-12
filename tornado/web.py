@@ -124,7 +124,8 @@ class RequestHandler(object):
             "Server": "TornadoServer/0.1",
             "Content-Type": "text/html; charset=UTF-8",
         }
-        if not self.request.supports_http_1_1():
+        supports_http_1_1 = self.request.client_proto = "HTTP/1.1"
+        if not supports_http_1_1:
             if self.request.headers.get("Connection") == "Keep-Alive":
                 self.set_header("Connection", "Keep-Alive")
         self._write_buffer = []
@@ -402,11 +403,12 @@ class RequestHandler(object):
         """Flushes the current output buffer to the nextwork."""
         if self.application._wsgi:
             raise Exception("WSGI applications do not support flush()")
-        if not self._headers_written:
-            self._headers_written = True
-            headers = self._generate_headers()
-        else:
-            headers = ""
+
+        for k,v in self._generate_headers():
+            if isinstance(v, list):
+                self.request.responseHeaders.setRawHeaders(k, v)
+            else:
+                self.request.setHeader(k, v)
 
         # Ignore the chunk and only write the headers for HEAD requests
         if self.request.method == "HEAD":
@@ -429,8 +431,8 @@ class RequestHandler(object):
                 footer = transform.footer()
                 if footer: chunk += footer
 
-        if headers or chunk:
-            self.request.write(headers + chunk)
+        if chunk:
+            self.request.write(chunk)
 
     def finish(self, chunk=None):
         """Finishes this response, ending the HTTP request."""
@@ -694,13 +696,14 @@ class RequestHandler(object):
     def _generate_headers(self):
         for transform in self._transforms:
             headers = transform.transform_headers(self._headers)
-        lines = [self.request.version + " " + str(self._status_code) + " " +
-                 httplib.responses[self._status_code]]
-        lines.extend(["%s: %s" % (n, v) for n, v in self._headers.iteritems()])
+
+        headers = list(headers.items())
+        headers.extend(self._headers.iteritems())
+        cookies = []
         for cookie_dict in getattr(self, "_new_cookies", []):
-            for cookie in cookie_dict.values():
-                lines.append("Set-Cookie: " + cookie.OutputString(None))
-        return "\r\n".join(lines) + "\r\n\r\n"
+            cookies.extend([c.OutputString(None) for c in cookie_dict.values()])
+        headers.append(('Set-Cookie', cookies))
+        return headers
 
     def _log(self):
         if self._status_code < 400:
@@ -709,13 +712,15 @@ class RequestHandler(object):
             log_method = logging.warning
         else:
             log_method = logging.error
-        request_time = 1000.0 * self.request.request_time()
+        # XXX:  Calculate request time.
+        # request_time = 1000.0 * self.request.request_time()
+        request_time = 1.0
         log_method("%d %s %.2fms", self._status_code,
                    self._request_summary(), request_time)
 
     def _request_summary(self):
         return self.request.method + " " + self.request.uri + " (" + \
-            self.request.remote_ip + ")"
+            self.request.getClientIP() + ")"
 
     def _handle_request_exception(self, e):
         if isinstance(e, HTTPError):
@@ -861,7 +866,9 @@ class Application(object):
         self.transforms.append(transform_class)
 
     def _get_host_handlers(self, request):
-        host = request.host.lower().split(':')[0]
+        # XXX:  Figure out what this meant before
+        # host = request.host.lower().split(':')[0]
+        host = str(request.host)
         for pattern, handlers in self.handlers:
             if pattern.match(host):
                 return handlers
@@ -1075,7 +1082,8 @@ class ChunkedTransferEncoding(OutputTransform):
     See http://www.w3.org/Protocols/rfc2616/rfc2616-sec3.html#sec3.6.1
     """
     def __init__(self, request):
-        self._chunking = request.supports_http_1_1()
+        supports_http_1_1 = request.client_proto = "HTTP/1.1"
+        self._chunking = supports_http_1_1
 
     def transform_headers(self, headers):
         if self._chunking:
