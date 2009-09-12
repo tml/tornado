@@ -35,8 +35,6 @@ import bisect
 import datetime
 import escape
 import hashlib
-import httpserver
-import ioloop
 import os
 import os.path
 import urllib
@@ -46,10 +44,11 @@ import web
 def start(port, root_directory="/tmp/s3", bucket_depth=0):
     """Starts the mock S3 server on the given port at the given path."""
     application = S3Application(root_directory, bucket_depth)
-    http_server = httpserver.HTTPServer(application)
-    http_server.listen(port)
-    ioloop.IOLoop.instance().start()
 
+    site = tornado.twister.TornadoSite(application)
+    reactor.listenTCP(port, site)
+
+    reactor.run()
 
 class S3Application(web.Application):
     """Implementation of an S3-like storage server based on local files.
