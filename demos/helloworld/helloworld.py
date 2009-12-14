@@ -19,7 +19,6 @@ from twisted.internet import reactor
 import tornado.options
 import tornado.twister
 import tornado.web
-import logging
 
 from tornado.options import define, options
 
