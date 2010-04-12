@@ -60,6 +60,7 @@ import time
 import urllib
 import web
 
+_log = logging.getLogger('tornado.wsgi')
 
 class WSGIApplication(web.Application):
     """A WSGI-equivalent of web.Application.
@@ -158,13 +159,13 @@ class HTTPRequest(object):
             if not part: continue
             eoh = part.find("\r\n\r\n")
             if eoh == -1:
-                logging.warning("multipart/form-data missing headers")
+                _log.warning("multipart/form-data missing headers")
                 continue
             headers = HTTPHeaders.parse(part[:eoh])
             name_header = headers.get("Content-Disposition", "")
             if not name_header.startswith("form-data;") or \
                not part.endswith("\r\n"):
-                logging.warning("Invalid multipart/form-data")
+                _log.warning("Invalid multipart/form-data")
                 continue
             value = part[eoh + 4:-2]
             name_values = {}
@@ -172,7 +173,7 @@ class HTTPRequest(object):
                 name, name_value = name_part.strip().split("=", 1)
                 name_values[name] = name_value.strip('"').decode("utf-8")
             if not name_values.get("name"):
-                logging.warning("multipart/form-data value missing name")
+                _log.warning("multipart/form-data value missing name")
                 continue
             name = name_values["name"]
             if name_values.get("filename"):
@@ -210,22 +211,31 @@ class WSGIContainer(object):
 
     def __call__(self, request):
         data = {}
-        def start_response(status, response_headers):
+        response = []
+        def start_response(status, response_headers, exc_info=None):
             data["status"] = status
-            data["headers"] = HTTPHeaders(response_headers)
-        body = "".join(self.wsgi_application(
-            self._environ(request), start_response))
+            data["headers"] = response_headers
+            return response.append
+        response.extend(self.wsgi_application(
+                WSGIContainer.environ(request), start_response))
+        body = "".join(response)
+        if hasattr(response, "close"):
+            response.close()
         if not data: raise Exception("WSGI app did not call start_response")
 
         status_code = int(data["status"].split()[0])
         headers = data["headers"]
+        header_set = set(k.lower() for (k,v) in headers)
         body = escape.utf8(body)
-        headers["Content-Length"] = str(len(body))
-        headers.setdefault("Content-Type", "text/html; charset=UTF-8")
-        headers.setdefault("Server", "TornadoServer/0.1")
+        if "content-length" not in header_set:
+            headers.append(("Content-Length", str(len(body))))
+        if "content-type" not in header_set:
+            headers.append(("Content-Type", "text/html; charset=UTF-8"))
+        if "server" not in header_set:
+            headers.append(("Server", "TornadoServer/0.1"))
 
         parts = ["HTTP/1.1 " + data["status"] + "\r\n"]
-        for key, value in headers.iteritems():
+        for key, value in headers:
             parts.append(escape.utf8(key) + ": " + escape.utf8(value) + "\r\n")
         parts.append("\r\n")
         parts.append(body)
@@ -233,7 +243,8 @@ class WSGIContainer(object):
         request.finish()
         self._log(status_code, request)
 
-    def _environ(self, request):
+    @staticmethod
+    def environ(request):
         hostport = request.host.split(":")
         if len(hostport) == 2:
             host = hostport[0]
@@ -246,8 +257,10 @@ class WSGIContainer(object):
             "SCRIPT_NAME": "",
             "PATH_INFO": request.path,
             "QUERY_STRING": request.query,
+            "REMOTE_ADDR": request.remote_ip,
             "SERVER_NAME": host,
             "SERVER_PORT": port,
+            "SERVER_PROTOCOL": request.version,
             "wsgi.version": (1, 0),
             "wsgi.url_scheme": request.protocol,
             "wsgi.input": cStringIO.StringIO(request.body),
@@ -266,11 +279,11 @@ class WSGIContainer(object):
 
     def _log(self, status_code, request):
         if status_code < 400:
-            log_method = logging.info
+            log_method = _log.info
         elif status_code < 500:
-            log_method = logging.warning
+            log_method = _log.warning
         else:
-            log_method = logging.error
+            log_method = _log.error
         request_time = 1000.0 * request.request_time()
         summary = request.method + " " + request.uri + " (" + \
             request.remote_ip + ")"

@@ -50,6 +50,7 @@ import binascii
 import cgi
 import hashlib
 import hmac
+import httpclient
 import escape
 import logging
 import time
@@ -57,19 +58,7 @@ import urllib
 import urlparse
 import uuid
 
-from twisted.web import client
-
-class CallbackAdaptorMixin(object):
-
-    def adaptCallback(self, deferred, callback, *args, **kwargs):
-        class Response(object):
-            def __init__(self, error=None, body=None):
-                self.error = error
-                self.body = body
-
-        deferred.addCallback(lambda x: Response(body=x))
-        deferred.addErrback(lambda e: Response(error=e))
-        deferred.addCallback(lambda r: callback(r, *args, **kwargs))
+_log = logging.getLogger("tornado.auth")
 
 class OpenIdMixin(object):
     """Abstract implementation of OpenID and Attribute Exchange.
@@ -100,16 +89,15 @@ class OpenIdMixin(object):
         methods.
         """
         # Verify the OpenID response via direct request to the OP
-        args = dict((k, v[-1]) for k, v in self.request.args.iteritems())
+        args = dict((k, v[-1]) for k, v in self.request.arguments.iteritems())
         args["openid.mode"] = u"check_authentication"
         url = self._OPENID_ENDPOINT + "?" + urllib.urlencode(args)
-
-        d = client.getPage(url)
-        self.adaptCallback(client.getPage(url),
-                           self.async_callback(self._on_authentication_verified, callback))
+        http = httpclient.AsyncHTTPClient()
+        http.fetch(url, self.async_callback(
+            self._on_authentication_verified, callback))
 
     def _openid_args(self, callback_uri, ax_attrs=[], oauth_scope=None):
-        url = urlparse.urljoin(self.request.uri, callback_uri)
+        url = urlparse.urljoin(self.request.full_url(), callback_uri)
         args = {
             "openid.ns": "http://specs.openid.net/auth/2.0",
             "openid.claimed_id": 
@@ -117,7 +105,7 @@ class OpenIdMixin(object):
             "openid.identity": 
                 "http://specs.openid.net/auth/2.0/identifier_select",
             "openid.return_to": url,
-            "openid.realm": "http://" + self.request.getRequestHostname() + "/",
+            "openid.realm": "http://" + self.request.host + "/",
             "openid.mode": "checkid_setup",
         }
         if ax_attrs:
@@ -151,21 +139,21 @@ class OpenIdMixin(object):
             args.update({
                 "openid.ns.oauth":
                     "http://specs.openid.net/extensions/oauth/1.0",
-                "openid.oauth.consumer": self.request.getRequestHostname(),
+                "openid.oauth.consumer": self.request.host.split(":")[0],
                 "openid.oauth.scope": oauth_scope,
             })
         return args
 
     def _on_authentication_verified(self, callback, response):
         if response.error or u"is_valid:true" not in response.body:
-            logging.warning("Invalid OpenID response: %s", response.error or
+            _log.warning("Invalid OpenID response: %s", response.error or
                             response.body)
             callback(None)
             return
 
         # Make sure we got back at least an email from attribute exchange
         ax_ns = None
-        for name, values in self.request.args.iteritems():
+        for name, values in self.request.arguments.iteritems():
             if name.startswith("openid.ns.") and \
                values[-1] == u"http://openid.net/srv/ax/1.0":
                 ax_ns = name[10:]
@@ -174,7 +162,7 @@ class OpenIdMixin(object):
             if not ax_ns: return u""
             prefix = "openid." + ax_ns + ".type."
             ax_name = None
-            for name, values in self.request.args.iteritems():
+            for name, values in self.request.arguments.iteritems():
                 if values[-1] == uri and name.startswith(prefix):
                     part = name[len(prefix):]
                     ax_name = "openid." + ax_ns + ".value." + part
@@ -245,12 +233,12 @@ class OAuthMixin(object):
         request_key = self.get_argument("oauth_token")
         request_cookie = self.get_cookie("_oauth_request_token")
         if not request_cookie:
-            logging.warning("Missing OAuth request token cookie")
+            _log.warning("Missing OAuth request token cookie")
             callback(None)
             return
         cookie_key, cookie_secret = request_cookie.split("|")
         if cookie_key != request_key:
-            logging.warning("Request token does not match cookie")
+            _log.warning("Request token does not match cookie")
             callback(None)
             return
         token = dict(key=cookie_key, secret=cookie_secret)
@@ -281,7 +269,7 @@ class OAuthMixin(object):
         args = dict(oauth_token=request_token["key"])
         if callback_uri:
             args["oauth_callback"] = urlparse.urljoin(
-                self.request.uri, callback_uri)
+                self.request.full_url(), callback_uri)
         self.redirect(authorize_url + "?" + urllib.urlencode(args))
 
     def _oauth_access_token_url(self, request_token):
@@ -302,7 +290,7 @@ class OAuthMixin(object):
 
     def _on_access_token(self, callback, response):
         if response.error:
-            logging.warning("Could not fetch access token")
+            _log.warning("Could not fetch access token")
             callback(None)
             return
         access_token = _oauth_parse_response(response.body)
@@ -454,7 +442,7 @@ class TwitterMixin(OAuthMixin):
     
     def _on_twitter_request(self, callback, response):
         if response.error:
-            logging.warning("Error response %s fetching %s", response.error,
+            _log.warning("Error response %s fetching %s", response.error,
                             response.request.url)
             callback(None)
             return
@@ -574,7 +562,7 @@ class FriendFeedMixin(OAuthMixin):
     
     def _on_friendfeed_request(self, callback, response):
         if response.error:
-            logging.warning("Error response %s fetching %s", response.error,
+            _log.warning("Error response %s fetching %s", response.error,
                             response.request.url)
             callback(None)
             return
@@ -649,7 +637,7 @@ class GoogleMixin(OpenIdMixin, OAuthMixin):
         """Fetches the authenticated user data upon redirect."""
         # Look to see if we are doing combined OpenID/OAuth
         oauth_ns = ""
-        for name, values in self.request.args.iteritems():
+        for name, values in self.request.arguments.iteritems():
             if name.startswith("openid.ns.") and \
                values[-1] == u"http://specs.openid.net/extensions/oauth/1.0":
                 oauth_ns = name[10:]
@@ -689,7 +677,7 @@ class FacebookMixin(object):
                           tornado.auth.FacebookMixin):
         @tornado.web.asynchronous
         def get(self):
-            if self.get_argument("auth_token", None):
+            if self.get_argument("session", None):
                 self.get_authenticated_user(self.async_callback(self._on_auth))
                 return
             self.authenticate_redirect()
@@ -715,12 +703,12 @@ class FacebookMixin(object):
             "v": "1.0",
             "fbconnect": "true",
             "display": "page",
-            "next": urlparse.urljoin(self.request.uri, callback_uri),
+            "next": urlparse.urljoin(self.request.full_url(), callback_uri),
             "return_session": "true",
         }
         if cancel_uri:
             args["cancel_url"] = urlparse.urljoin(
-                self.request.uri, cancel_uri)
+                self.request.full_url(), cancel_uri)
         if extended_permissions:
             if isinstance(extended_permissions, basestring):
                 extended_permissions = [extended_permissions]
@@ -832,17 +820,17 @@ class FacebookMixin(object):
 
     def _parse_response(self, callback, response):
         if response.error:
-            logging.warning("HTTP error from Facebook: %s", response.error)
+            _log.warning("HTTP error from Facebook: %s", response.error)
             callback(None)
             return
         try:
             json = escape.json_decode(response.body)
         except:
-            logging.warning("Invalid JSON from Facebook: %r", response.body)
+            _log.warning("Invalid JSON from Facebook: %r", response.body)
             callback(None)
             return
         if isinstance(json, dict) and json.get("error_code"):
-            logging.warning("Facebook error: %d: %r", json["error_code"],
+            _log.warning("Facebook error: %d: %r", json["error_code"],
                             json.get("error_msg"))
             callback(None)
             return
