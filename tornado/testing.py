@@ -74,12 +74,16 @@ class AsyncTestCase(unittest.TestCase):
                 response = self.wait()
                 # Test contents of response
     """
-    def setUp(self):
-        self.io_loop = self.get_new_ioloop()
+    def __init__(self, *args, **kwargs):
+        super(AsyncTestCase, self).__init__(*args, **kwargs)
         self.__stopped = False
         self.__running = False
         self.__failure = None
         self.__stop_args = None
+
+    def setUp(self):
+        super(AsyncTestCase, self).setUp()
+        self.io_loop = self.get_new_ioloop()
 
     def tearDown(self):
         if self.io_loop is not tornado.ioloop.IOLoop.instance():
@@ -197,7 +201,8 @@ class AsyncHTTPTestCase(AsyncTestCase):
 
         self.http_client = AsyncHTTPClient(io_loop=self.io_loop)
         self._app = self.get_app()
-        self.http_server = HTTPServer(self._app, io_loop=self.io_loop)
+        self.http_server = HTTPServer(self._app, io_loop=self.io_loop,
+                                      **self.get_httpserver_options())
         self.http_server.listen(self.get_http_port())
 
     def get_app(self):
@@ -205,6 +210,12 @@ class AsyncHTTPTestCase(AsyncTestCase):
         tornado.web.Application or other HTTPServer callback.
         """
         raise NotImplementedError()
+
+    def get_httpserver_options(self):
+        """May be overridden by subclasses to return additional
+        keyword arguments for HTTPServer.
+        """
+        return {}
 
     def get_http_port(self):
         """Returns the port used by the HTTPServer.
@@ -242,6 +253,12 @@ class LogTrapTestCase(unittest.TestCase):
     """
     def run(self, result=None):
         logger = logging.getLogger()
+        if len(logger.handlers) > 1:
+            # Multiple handlers have been defined.  It gets messy to handle
+            # this, especially since the handlers may have different
+            # formatters.  Just leave the logging alone in this case.
+            super(LogTrapTestCase, self).run(result)
+            return
         if not logger.handlers:
             logging.basicConfig()
         self.assertEqual(len(logger.handlers), 1)

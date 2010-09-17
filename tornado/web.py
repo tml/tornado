@@ -65,6 +65,7 @@ import re
 import stat
 import sys
 import time
+import tornado
 import types
 import urllib
 import urlparse
@@ -82,7 +83,7 @@ class RequestHandler(object):
     should override the class variable SUPPORTED_METHODS in your
     RequestHandler class.
     """
-    SUPPORTED_METHODS = ("GET", "HEAD", "POST", "DELETE", "PUT")
+    SUPPORTED_METHODS = ("GET", "HEAD", "POST", "DELETE", "PUT", "OPTIONS")
 
     def __init__(self, application, request, **kwargs):
         self.application = application
@@ -141,6 +142,9 @@ class RequestHandler(object):
     def put(self, *args, **kwargs):
         raise HTTPError(405)
 
+    def options(self, *args, **kwargs):
+        raise HTTPError(405)
+
     def prepare(self):
         """Called before the actual handler method.
 
@@ -160,13 +164,18 @@ class RequestHandler(object):
         you try (and fail) to produce some output.  The epoll- and kqueue-
         based implementations should detect closed connections even while
         the request is idle.
+
+        Proxies may keep a connection open for a time (perhaps
+        indefinitely) after the client has gone away, so this method
+        may not be called promptly after the end user closes their
+        connection.
         """
         pass
 
     def clear(self):
         """Resets all headers and content for this response."""
         self._headers = {
-            "Server": "TornadoServer/1.0",
+            "Server": "TornadoServer/%s" % tornado.version,
             "Content-Type": "text/html; charset=UTF-8",
         }
         if not self.request.supports_http_1_1():
@@ -339,6 +348,16 @@ class RequestHandler(object):
         if timestamp < time.time() - 31 * 86400:
             logging.warning("Expired cookie %r", value)
             return None
+        if timestamp > time.time() + 31 * 86400:
+            # _cookie_signature does not hash a delimiter between the
+            # parts of the cookie, so an attacker could transfer trailing
+            # digits from the payload to the timestamp without altering the
+            # signature.  For backwards compatibility, sanity-check timestamp
+            # here instead of modifying _cookie_signature.
+            logging.warning("Cookie timestamp in future; possible tampering %r", value)
+            return None
+        if parts[1].startswith("0"):
+            logging.warning("Tampered cookie %r", value)
         try:
             return base64.b64decode(parts[0])
         except:
@@ -368,6 +387,11 @@ class RequestHandler(object):
 
         If the given chunk is a dictionary, we write it as JSON and set
         the Content-Type of the response to be text/javascript.
+
+        Note that lists are not converted to JSON because of a potential
+        cross-site security vulnerability.  All JSON output should be
+        wrapped in a dictionary.  More details at
+        http://haacked.com/archive/2008/11/20/anatomy-of-a-subtle-json-vulnerability.aspx
         """
         assert not self._finished
         if isinstance(chunk, dict):
@@ -1002,7 +1026,13 @@ class Application(object):
             autoreload.start()
 
     def add_handlers(self, host_pattern, host_handlers):
-        """Appends the given handlers to our handler list."""
+        """Appends the given handlers to our handler list.
+
+        Note that host patterns are processed sequentially in the
+        order they were added, and only the first matching pattern is
+        used.  This means that all handlers for a given host must be
+        added in a single add_handlers call.
+        """
         if not host_pattern.endswith("$"):
             host_pattern += "$"
         handlers = []
@@ -1114,8 +1144,8 @@ class Application(object):
         # request so you don't need to restart to see changes
         if self.settings.get("debug"):
             if getattr(RequestHandler, "_templates", None):
-              map(lambda loader: loader.reset(),
-                  RequestHandler._templates.values())
+                for loader in RequestHandler._templates.values():
+                    loader.reset()
             RequestHandler._static_hashes = {}
 
         handler._execute(transforms, *args, **kwargs)
@@ -1245,8 +1275,8 @@ class StaticFileHandler(RequestHandler):
             file.close()
 
     def set_extra_headers(self, path):
-      """For subclass to add extra headers to the response"""
-      pass
+        """For subclass to add extra headers to the response"""
+        pass
 
 
 class FallbackHandler(RequestHandler):

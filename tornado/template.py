@@ -170,7 +170,7 @@ class Loader(object):
         self.templates = {}
 
     def reset(self):
-      self.templates = {}
+        self.templates = {}
 
     def resolve_path(self, name, parent_path=None):
         if parent_path and not parent_path.startswith("<") and \
@@ -428,7 +428,7 @@ class _TemplateReader(object):
     def __getitem__(self, key):
         if type(key) is slice:
             size = len(self)
-            start, stop, step = slice.indices(size)
+            start, stop, step = key.indices(size)
             if start is None: start = self.pos
             else: start += self.pos
             if stop is not None: stop += self.pos
